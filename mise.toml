@@ -1,8 +1,28 @@
+[tools]
+actionlint = "1.7.12"
+hadolint = "2.15.1"
+shellcheck = "0.11.0"
+
+[tasks.check]
+description = "Lint the Dockerfile, the workflow and the shell scripts"
+run = [
+    "hadolint Dockerfile",
+    "actionlint .github/workflows/image.yml",
+    "shellcheck test/*.sh",
+]
+
 [tasks."image:build"]
 description = "Build the crossbuild image for the host architecture"
-run = "docker buildx build --tag goreleaser-cgo-crossbuild:dev --load ."
+# The submodule is the musl toolchain recipe; without it the build fails with an
+# opaque checksum error rather than saying what is missing.
+run = "git submodule update --init --recursive && docker buildx build --tag goreleaser-cgo-crossbuild:dev --load ."
 
 [tasks."image:verify"]
-description = "Build the image and check all six toolchains inside it"
+description = "Build the image and check every toolchain inside it"
 depends = ["image:build"]
-run = "docker run --rm --volume \"$PWD:/src:ro\" --workdir /src goreleaser-cgo-crossbuild:dev bash test/verify-toolchains.sh"
+run = "docker run --rm -i --entrypoint bash goreleaser-cgo-crossbuild:dev -s < test/verify-toolchains.sh"
+
+[tasks."image:release"]
+description = "Run a six-target GoReleaser snapshot release inside the image"
+depends = ["image:build"]
+run = "test/release-snapshot.sh"

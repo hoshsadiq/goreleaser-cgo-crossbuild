@@ -1,1 +1,8 @@
+# Git data is useless in the build context; the submodule is checked out into it.
 **/.git
+
+# A cross-make build run locally leaves these in the submodule, and they are
+# hundreds of megabytes. The recipe recreates them inside the container.
+cross-make/build*
+cross-make/obj_*
+cross-make/sources
