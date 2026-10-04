@@ -1,33 +1,46 @@
 #!/usr/bin/env bash
-# Runs inside the image, after test/release-snapshot.sh has produced dist/. Checks
-# that the snapshot release produced all six targets, that each one is the format it
-# should be (static musl for Linux, Mach-O for Darwin, PE for Windows), and that the
-# archive and checksum steps ran too.
 set -euo pipefail
+
+# Every target the fixture asks for: static musl ELF for linux, Mach-O for darwin,
+# PE for windows. The count is one per target because a missing artefact should
+# fail rather than pass silently.
+targets=7
+static_targets=3
 
 failures=0
 failed() { failures=$((failures + 1)); }
 
-descriptions=""
-while IFS= read -r binary; do
-    description="$(file -b "$binary")"
-    printf '%-40s %s\n' "${binary#dist/}" "$description"
-    descriptions="${descriptions}${description}"$'\n'
-done < <(find dist -type f \( -name fixture -o -name fixture.exe \) | sort)
+report_binaries() {
+    local binary description
+    descriptions=""
 
-count="$(printf '%s' "$descriptions" | grep -c . || true)"
-if [ "$count" -ne 6 ]; then
-    echo "expected 6 binaries, found $count" >&2
-    failed
-fi
+    while IFS= read -r binary; do
+        description="$(file -b "$binary")"
+        printf '%-40s %s\n' "${binary#dist/}" "$description"
+        descriptions+="$description"$'\n'
+    done < <(find dist -type f \( -name fixture -o -name fixture.exe \) | sort)
+}
 
-while IFS= read -r want; do
-    if ! printf '%s' "$descriptions" | grep -qF "$want"; then
-        echo "no artefact reported: $want" >&2
+check_binary_count() {
+    local count
+    count="$(grep -c . <<<"$descriptions" || true)"
+
+    if [ "$count" -ne "$targets" ]; then
+        echo "expected $targets binaries, found $count" >&2
         failed
     fi
-done <<'WANT'
+}
+
+check_formats() {
+    local want
+    while IFS= read -r want; do
+        if ! grep -qF "$want" <<<"$descriptions"; then
+            echo "no artefact reported: $want" >&2
+            failed
+        fi
+    done <<'WANT'
 ELF 64-bit
+ELF 32-bit
 static
 ARM aarch64
 Mach-O 64-bit x86_64 executable
@@ -36,48 +49,65 @@ PE32+ executable (console) x86-64
 PE32+ executable (console) Aarch64
 WANT
 
-static="$(printf '%s' "$descriptions" | grep -c 'static' || true)"
-if [ "$static" -ne 2 ]; then
-    echo "expected the two linux binaries to be static, found $static" >&2
-    failed
-fi
+    local static_count
+    static_count="$(grep -c 'static' <<<"$descriptions" || true)"
+    if [ "$static_count" -ne "$static_targets" ]; then
+        echo "expected $static_targets static linux binaries, found $static_count" >&2
+        failed
+    fi
+}
 
-# A release that built the binaries but skipped the archive or checksum steps would
-# otherwise pass, and those are the files a consumer actually downloads.
-mapfile -t archives < <(find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
-if [ "${#archives[@]}" -ne 6 ]; then
-    echo "expected 6 archives, found ${#archives[@]}" >&2
-    failed
-fi
+check_archives() {
+    local archives=() archive
+    mapfile -t archives < <(find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
 
-# Every archive must carry the binary it was built for. Zip entries are not listed
-# here because the image has no unzip, so those are covered by the checksums below.
-for archive in "${archives[@]}"; do
-    case "$archive" in
-        *.tar.gz)
-            if ! tar tzf "$archive" | grep -qE 'fixture$'; then
-                echo "no binary inside $archive" >&2
-                failed
-            fi
-            ;;
-    esac
-done
+    if [ "${#archives[@]}" -ne "$targets" ]; then
+        echo "expected $targets archives, found ${#archives[@]}" >&2
+        failed
+    fi
 
-checksums="$(find dist -maxdepth 1 -type f -name '*checksums.txt' | wc -l | tr -d ' ')"
-if [ "$checksums" -ne 1 ]; then
-    echo "expected one checksums file, found $checksums" >&2
-    failed
-else
-    checksum_file="$(find dist -maxdepth 1 -type f -name '*checksums.txt' | head -1)"
+    # Only the tarballs: the image has no unzip, and the checksums below cover the rest.
+    for archive in "${archives[@]}"; do
+        case "$archive" in
+            *.tar.gz)
+                if ! tar tzf "$archive" | grep -qE 'fixture$'; then
+                    echo "no binary inside $archive" >&2
+                    failed
+                fi
+                ;;
+        esac
+    done
+}
+
+check_checksums() {
+    local checksums checksum_file
+    mapfile -t checksums < <(find dist -maxdepth 1 -type f -name '*checksums.txt')
+
+    if [ "${#checksums[@]}" -ne 1 ]; then
+        echo "expected one checksums file, found ${#checksums[@]}" >&2
+        failed
+        return
+    fi
+
+    checksum_file="${checksums[0]}"
     if ! ( cd dist && sha256sum -c "$(basename "$checksum_file")" >/dev/null ); then
         echo "$checksum_file does not match the archives" >&2
         failed
     fi
-fi
+}
 
-if [ "$failures" -ne 0 ]; then
-    echo "$failures check(s) failed"
-    exit 1
-fi
+main() {
+    report_binaries
+    check_binary_count
+    check_formats
+    check_archives
+    check_checksums
 
-echo "six targets built and static where they should be, with verified archives and checksums"
+    if [ "$failures" -ne 0 ]; then
+        echo "$failures check(s) failed"
+        exit 1
+    fi
+    echo "$targets targets built, $static_targets of them static, with verified archives and checksums"
+}
+
+main "$@"

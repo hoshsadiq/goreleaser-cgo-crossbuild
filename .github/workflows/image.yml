@@ -90,23 +90,19 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
-      # The point of this repository. A green run here means the six compilers were
-      # exercised, not merely copied into place.
+      # A build only proves the compilers copied. This proves they compile.
       - name: Verify every toolchain
         run: docker run --rm -i --entrypoint bash "${{ env.IMAGE }}:${{ matrix.arch }}" -s < test/verify-toolchains.sh
 
-      # And the point of the compilers: a real six-target cgo release through
-      # GoReleaser, which covers Go's linker, cgo, the Darwin dSYM step and the
-      # archive formats together.
-      - name: Verify a six-target release
+      # The same compilers driven by GoReleaser, which is what a consumer does.
+      - name: Verify a seven-target release
         env:
           IMAGE: ${{ env.IMAGE }}:${{ matrix.arch }}
         run: bash test/release-snapshot.sh
 
-      # Pushed under the run id rather than the architecture name, and its digest is
-      # handed to the publish job as an artifact, so that job merges exactly what this
-      # run built instead of whatever a tag happens to point at. Only on the paths that
-      # publish: a branch dispatch builds and verifies without leaving tags behind.
+      # Pushed under the run id, and the digest is handed to the publish job, so it
+      # merges what this run built rather than whatever a tag points at. Only on the
+      # paths that publish: a branch dispatch builds and verifies without tags.
       - name: Push this architecture
         if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
         env:
