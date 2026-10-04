@@ -44,16 +44,35 @@ fi
 
 # A release that built the binaries but skipped the archive or checksum steps would
 # otherwise pass, and those are the files a consumer actually downloads.
-archives="$(find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d ' ')"
-if [ "$archives" -ne 6 ]; then
-    echo "expected 6 archives, found $archives" >&2
+mapfile -t archives < <(find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+if [ "${#archives[@]}" -ne 6 ]; then
+    echo "expected 6 archives, found ${#archives[@]}" >&2
     failed
 fi
+
+# Every archive must carry the binary it was built for. Zip entries are not listed
+# here because the image has no unzip, so those are covered by the checksums below.
+for archive in "${archives[@]}"; do
+    case "$archive" in
+        *.tar.gz)
+            if ! tar tzf "$archive" | grep -qE 'fixture$'; then
+                echo "no binary inside $archive" >&2
+                failed
+            fi
+            ;;
+    esac
+done
 
 checksums="$(find dist -maxdepth 1 -type f -name '*checksums.txt' | wc -l | tr -d ' ')"
 if [ "$checksums" -ne 1 ]; then
     echo "expected one checksums file, found $checksums" >&2
     failed
+else
+    checksum_file="$(find dist -maxdepth 1 -type f -name '*checksums.txt' | head -1)"
+    if ! ( cd dist && sha256sum -c "$(basename "$checksum_file")" >/dev/null ); then
+        echo "$checksum_file does not match the archives" >&2
+        failed
+    fi
 fi
 
 if [ "$failures" -ne 0 ]; then
@@ -61,4 +80,4 @@ if [ "$failures" -ne 0 ]; then
     exit 1
 fi
 
-echo "six targets built, two of them static musl, with archives and checksums"
+echo "six targets built and static where they should be, with verified archives and checksums"

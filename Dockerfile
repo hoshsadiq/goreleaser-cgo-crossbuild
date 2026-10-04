@@ -30,39 +30,48 @@ ARG MUSL_TARGETS="x86_64-linux-musl aarch64-linux-musl"
 # small container VM.
 ARG MUSL_JOBS=
 
-# cross-make fetches these two from git.savannah.gnu.org while it unpacks sources
-# (Makefile:197-210), and that host's git front-end is regularly unreachable, which
-# fails the build before a compiler is built. No mirror of the exact revision it pins
-# is dependable either. Seeding the files it wants means make finds them and skips its
-# own download, at the cost of bypassing cross-make's sha1 check for them: these two
-# sha256 values are ours, recorded from GCC's mirror at the commit pinned here. They are
-# the same config.guess and config.sub that GCC ships.
-ARG GCC_MIRROR_COMMIT=a72c55f2a6eae4093fd378d6d5e37cb3f4737fd0
-ARG CONFIG_GUESS_SHA256=7d1e3c79b86de601c3a0457855ab854dffd15163f53c91edac54a7be2e9c931b
-ARG CONFIG_SUB_SHA256=71b8d73e46e0c31b1dc91ba5306f5ef0af009273b3bb283f31d8dad69666fa9e
+# cross-make fetches these two from git.savannah.gnu.org at the revision its Makefile
+# names (CONFIG_GUESS_REV / CONFIG_SUB_REV, in the rules that build sources/config.sub
+# and sources/config.guess), and that host's gitweb and cgit are regularly unreachable,
+# which fails the build before a compiler is built. They are fetched here instead: the revision is read out of the recipe, so a
+# submodule bump is followed rather than silently ignored, and the content is checked
+# against the sha256 values below before make can use it. Seeding the files make wants
+# means it skips its own download, and its own sha1 check with it.
+#
+# git:// is unencrypted, so the sha256 check is what makes this safe rather than the
+# transport. If the check fails after a cross-make bump, its Makefile has moved to a
+# new revision; re-read both values with:
+#
+#   git clone git://git.savannah.gnu.org/config.git && \
+#     git -C config cat-file -p <rev>:config.guess | sha256sum
+ARG CONFIG_GUESS_SHA256=50205cf3ec5c7615b17f937a0a57babf4ec5cd0aade3d7b3cccbe5f1bf91a7ef
+ARG CONFIG_SUB_SHA256=26b852f75a637448360a956931439f7e818bf63150eaadb9b85484347628d1fd
 
 RUN apk add --no-cache \
         make curl bash patch gcc g++ musl-dev linux-headers \
         ca-certificates git gawk xz rsync file
 
+# Needed so a failure on the left of a pipe fails the build.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 COPY cross-make /build/cross-make
 WORKDIR /build/cross-make
 
 RUN set -eux; \
+    git clone --quiet git://git.savannah.gnu.org/config.git /tmp/config; \
     mkdir -p /build/cross-make/sources; \
     for file in config.guess config.sub; do \
         case "$file" in \
-            config.guess) want="$CONFIG_GUESS_SHA256" ;; \
-            config.sub) want="$CONFIG_SUB_SHA256" ;; \
+            config.guess) rev_var=CONFIG_GUESS_REV; want="$CONFIG_GUESS_SHA256" ;; \
+            config.sub) rev_var=CONFIG_SUB_REV; want="$CONFIG_SUB_SHA256" ;; \
         esac; \
-        curl -fsSL --retry 5 --retry-delay 3 --proto '=https' --proto-redir '=https' \
-            -o "/build/cross-make/sources/$file" \
-            "https://raw.githubusercontent.com/gcc-mirror/gcc/${GCC_MIRROR_COMMIT}/$file"; \
+        rev="$(sed -n "s/^$rev_var *= *//p" /build/cross-make/Makefile | head -1)"; \
+        git -C /tmp/config cat-file -p "$rev:$file" >"/build/cross-make/sources/$file"; \
         printf '%s  %s\n' "$want" "/build/cross-make/sources/$file" >"/tmp/$file.sha256"; \
         sha256sum -c "/tmp/$file.sha256"; \
-        rm -f "/tmp/$file.sha256"; \
         chmod +x "/build/cross-make/sources/$file"; \
-    done
+    done; \
+    rm -rf /tmp/config /tmp/config.guess.sha256 /tmp/config.sub.sha256
 
 # HOST= pins cross-make's OUTPUT at output-gcc/ either side of a submodule bump:
 # older revisions leave HOST empty, newer ones default it to "local", which
@@ -85,7 +94,11 @@ RUN set -eux; \
     done; \
     # cross-make's install leaves usr -> . behind for its own build-time paths.
     # Copied into /usr/local it becomes a self-referential link at the root of the tree.
-    rm -f /build/cross-make/output-gcc/usr
+    rm -f /build/cross-make/output-gcc/usr; \
+    # The downloaded tarballs and the extracted source trees are gigabytes, and nothing
+    # after the install reads them. Leaving them here would also put them in the build
+    # cache, which is what makes CI's cache budget tight.
+    rm -rf /build/cross-make/sources /build/cross-make/*.orig
 
 # --- windows ---------------------------------------------------------------
 # llvm-mingw's release tarball, picked by build-host architecture. It carries the
@@ -112,7 +125,7 @@ RUN set -eux; \
     case "$TARGETARCH" in \
         amd64) mingw_arch=x86_64; mingw_sha="$LLVM_MINGW_SHA256_AMD64" ;; \
         arm64) mingw_arch=aarch64; mingw_sha="$LLVM_MINGW_SHA256_ARM64" ;; \
-        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+        *) echo "unsupported TARGETARCH: ${TARGETARCH:-empty}; build with buildx and --platform" >&2; exit 1 ;; \
     esac; \
     mkdir -p /llvm-mingw; \
     curl -fsSL --retry 5 --retry-delay 3 --proto '=https' --proto-redir '=https' \
@@ -159,12 +172,14 @@ ENV OSX_CROSS_PATH=/usr/local/osxcross
 
 # file is for test/verify-toolchains.sh. libxml2 is here because osxcross's ld64
 # and xar link against it and the upstream osxcross image does not carry a copy.
-# llvm is here for dsymutil, and the dependency is hard: Go runs a bare `dsymutil`
-# from PATH for an unstripped darwin cgo build, and fails the link with
-# `running dsymutil failed: executable file not found in $PATH` when there is none.
-# Neither the osxcross image nor llvm-mingw puts a bare dsymutil on PATH, because
-# osxcross names its own after the target (arm64-apple-darwin25.1-dsymutil) and Go
-# does not look there. Passing -w in ldflags is the only way to avoid the call.
+# llvm is here for dsymutil, and the dependency is hard: Go asks the compiler driver
+# for it (CC --print-prog-name=dsymutil), which answers with osxcross's per-target name
+# under /usr/local/osxcross/bin, and that name is a symlink to the dsymutil in this
+# package. Without the package the symlink dangles and an unstripped darwin cgo build
+# fails with `running dsymutil failed: exec: "dsymutil": executable file not found in
+# $PATH`. Either -s or -w in ldflags avoids the call, since Go treats -s as implying -w.
+# The binary is in llvm-18 and the /usr/bin/dsymutil link comes from llvm-18-tools; the
+# metapackage pulls both, which is simpler than naming them and about as small.
 # make and pkg-config are here because cgo dependencies commonly want them, and
 # the image this replaces carried them. zip and tar stay for consumers whose
 # release hooks want them. GoReleaser itself does not shell out to zip.
@@ -181,7 +196,7 @@ RUN set -eux; \
     case "$TARGETARCH" in \
         amd64) mise_arch=x64; mise_sha="$MISE_SHA256_AMD64" ;; \
         arm64) mise_arch=arm64; mise_sha="$MISE_SHA256_ARM64" ;; \
-        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+        *) echo "unsupported TARGETARCH: ${TARGETARCH:-empty}; build with buildx and --platform" >&2; exit 1 ;; \
     esac; \
     curl -fsSL --retry 5 --retry-delay 3 --proto '=https' --proto-redir '=https' \
         -o /tmp/mise \
@@ -194,7 +209,19 @@ RUN set -eux; \
         "goreleaser@${GORELEASER_VERSION}" \
         "cosign@${COSIGN_VERSION}" \
         "syft@${SYFT_VERSION}"; \
-    rm -rf /mise/downloads /root/.local/state/mise/trusted-configs
+    # mise records the trust it was given while installing in its state directory, which
+    # does not follow MISE_DATA_DIR, so the global install above leaves a trusted entry
+    # behind. It is removed: only /work should be trusted at run time.
+    rm -rf /mise/downloads /root/.local/state/mise/trusted-configs; \
+    # What is baked in, so the verification script can assert the tools rather than
+    # only print them, and so a consumer can see what it was given.
+    printf '%s\n' \
+        "mise=$MISE_VERSION" \
+        "go=$GO_VERSION" \
+        "goreleaser=$GORELEASER_VERSION" \
+        "cosign=$COSIGN_VERSION" \
+        "syft=$SYFT_VERSION" \
+        >/etc/goreleaser-cgo-crossbuild-versions
 
 COPY --from=osxcross "${OSX_CROSS_PATH}" "${OSX_CROSS_PATH}"
 COPY --from=musl-builder /build/cross-make/output-gcc/ /usr/local/

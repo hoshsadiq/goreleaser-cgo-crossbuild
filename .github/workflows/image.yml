@@ -12,8 +12,8 @@ on:
     - cron: "0 4 * * 1"
 
 # Cancelling a superseded pull request run is right; cancelling a superseded main or
-# tag run would throw away hours of toolchain build and could leave the arch images
-# pushed without a merged index beside them.
+# tag run would throw away hours of toolchain build and could leave the architecture
+# images pushed without a merged index beside them.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -96,25 +96,39 @@ jobs:
         run: docker run --rm -i --entrypoint bash "${{ env.IMAGE }}:${{ matrix.arch }}" -s < test/verify-toolchains.sh
 
       # And the point of the compilers: a real six-target cgo release through
-      # GoReleaser, which is the only check that covers Go's linker, cgo, the Darwin
-      # dSYM step and the archive formats together.
+      # GoReleaser, which covers Go's linker, cgo, the Darwin dSYM step and the
+      # archive formats together.
       - name: Verify a six-target release
         env:
           IMAGE: ${{ env.IMAGE }}:${{ matrix.arch }}
         run: bash test/release-snapshot.sh
 
-      # Per-run tags, not the architecture names: the publish job merges the digests
-      # these produced, so two runs can never be stitched into one index. They stay
-      # in the registry as breadcrumbs; only the merged index and its version tags
-      # are meant to be used.
+      # Pushed under the run id rather than the architecture name, and its digest is
+      # handed to the publish job as an artifact, so that job merges exactly what this
+      # run built instead of whatever a tag happens to point at. Only on the paths that
+      # publish: a branch dispatch builds and verifies without leaving tags behind.
       - name: Push this architecture
-        if: github.event_name != 'pull_request'
+        if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
         env:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          docker tag "${IMAGE}:${ARCH}" "${IMAGE}:${GITHUB_RUN_ID}-${ARCH}"
-          docker push "${IMAGE}:${GITHUB_RUN_ID}-${ARCH}"
+
+          tag="${IMAGE}:${GITHUB_RUN_ID}-${ARCH}"
+          docker tag "${IMAGE}:${ARCH}" "$tag"
+          docker push "$tag"
+
+          digest="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)"
+          printf '%s\n' "$digest" >"digest-${ARCH}.txt"
+          echo "pushed ${tag} at ${digest}"
+
+      - name: Record this architecture's digest
+        if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digest-${{ matrix.arch }}.txt
+          retention-days: 1
 
   publish:
     name: publish
@@ -129,8 +143,8 @@ jobs:
       packages: write
       id-token: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -139,21 +153,60 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Collect the architecture digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      # Merged from the two digests the build jobs reported, never from a tag: a tag
+      # can be overwritten between the two jobs, and this workflow's signature is
+      # only worth anything if it signs what the build actually produced.
+      - name: Merge the two architectures
+        id: merge
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create -t "${IMAGE}:index-${GITHUB_RUN_ID}" \
+            "${IMAGE}@$(cat digests/digest-amd64.txt)" \
+            "${IMAGE}@$(cat digests/digest-arm64.txt)"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:index-${GITHUB_RUN_ID}" \
+            --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=${digest}" >>"$GITHUB_OUTPUT"
+          echo "merged index is ${IMAGE}@${digest}"
+
+      # Digest pinning only means something if the digest came from somewhere a
+      # consumer can check, so sign it keylessly with the workflow's own identity.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the merged digest
+        env:
+          DIGEST: ${{ steps.merge.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      # Verified before the release tags exist, so a signature that failed to land
+      # cannot leave a version tag pointing at an unsigned image.
+      - name: Verify the signature
+        env:
+          DIGEST: ${{ steps.merge.outputs.digest }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          cosign verify "${IMAGE}@${DIGEST}" \
+            --certificate-identity-regexp "^https://github\.com/${REPOSITORY}/\.github/workflows/image\.yml@" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
       # A tag push publishes that version; a push to the default branch publishes a
       # rolling latest plus the date and commit, so a consumer can pin something
       # older than latest without waiting for a release.
-      - name: Assemble the multi-architecture image
-        id: merge
+      - name: Tag the release
         env:
+          DIGEST: ${{ steps.merge.outputs.digest }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-
-          digest_of() {
-            docker buildx imagetools inspect "${IMAGE}:${GITHUB_RUN_ID}-$1" \
-              --format '{{json .Manifest}}' | jq -r .digest
-          }
 
           args=()
           if [ "$REF_TYPE" = "tag" ]; then
@@ -164,38 +217,21 @@ jobs:
             args+=(-t "${IMAGE}:latest")
             args+=(-t "${IMAGE}:$(date -u +%Y%m%d)")
             args+=(-t "${IMAGE}:sha-${GITHUB_SHA:0:7}")
-            version="latest"
           fi
 
-          # By digest, so the two architectures are provably this run's builds.
-          docker buildx imagetools create "${args[@]}" \
-            "${IMAGE}@$(digest_of amd64)" \
-            "${IMAGE}@$(digest_of arm64)"
-
-          digest="$(docker buildx imagetools inspect "${IMAGE}:${version}" \
-            --format '{{json .Manifest}}' | jq -r .digest)"
-          echo "digest=${digest}" >>"$GITHUB_OUTPUT"
-
-      # Digest pinning only means something if the digest came from somewhere a
-      # consumer can check, so sign it keylessly with the workflow's own identity.
-      - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-
-      - name: Sign the published digest
-        env:
-          DIGEST: ${{ steps.merge.outputs.digest }}
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
 
       - name: Report the digest
         env:
           DIGEST: ${{ steps.merge.outputs.digest }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           {
             echo "### \`${IMAGE}@${DIGEST}\`"
             echo
             echo '```'
             echo "cosign verify ${IMAGE}@${DIGEST} \\"
-            echo "  --certificate-identity-regexp '^https://github.com/${{ github.repository }}/\\.github/workflows/image\\.yml@' \\"
+            echo "  --certificate-identity-regexp '^https://github\\.com/${REPOSITORY}/\\.github/workflows/image\\.yml@' \\"
             echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"

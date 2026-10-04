@@ -32,8 +32,8 @@ On `PATH`, ahead of `/usr/local/bin`, are mise shims for Go, GoReleaser, cosign
 and syft, so a `mise.toml` in the mounted repository decides the versions. A
 repository that pins its own Go gets that Go, downloaded at run time.
 
-The base is `ubuntu:noble` (glibc). That is not incidental: osxcross does not run
-on musl. The musl toolchains are built in an Alpine stage and copied in, which
+The base is `ubuntu:noble` (glibc). That is not incidental: the osxcross binaries
+this image copies are linked against glibc and will not run on musl. The musl toolchains are built in an Alpine stage and copied in, which
 works because cross-make links their executables statically
 (`litecross/Makefile.gcc` sets `STAT = -static --static` unless the build host is
 darwin).
@@ -43,12 +43,14 @@ depends on the llvm-mingw clang that comes later in `PATH`. `/llvm-mingw/bin`
 cannot be dropped from `PATH` without breaking Darwin builds even though Darwin
 never runs a Windows compiler.
 
-Go also links an unstripped Darwin cgo build through a bare `dsymutil` taken from
-`PATH`, so the final stage installs `llvm` for it. Without one the link fails
-outright, and `-w` in `ldflags` is the only way to avoid the call: `-s` alone does
-not. The copy osxcross ships is named after the target
-(`arm64-apple-darwin25.1-dsymutil`) and Go never looks for that name, so the
-osxcross image on its own is not enough.
+Go also links an unstripped Darwin cgo build through `dsymutil`, so the final stage
+installs `llvm` for it. Go asks the compiler driver for it
+(`CC --print-prog-name=dsymutil`), which answers with osxcross's per-target name
+under `/usr/local/osxcross/bin`, and that name is a symlink to the `dsymutil` in
+this package. Without the package the symlink dangles, and an unstripped build
+fails with `running dsymutil failed: exec: "dsymutil": executable file not found
+in $PATH`. Either `-s` or `-w` in `ldflags` avoids the call: Go treats `-s` as
+implying `-w` when `-w` was not given explicitly.
 
 ## Using it
 
@@ -57,17 +59,30 @@ compose file is for humans; the digest is what decides which image runs.
 
 ```
 cosign verify ghcr.io/hoshsadiq/goreleaser-cgo-crossbuild@sha256:<digest> \
-  --certificate-identity-regexp '^https://github.com/hoshsadiq/goreleaser-cgo-crossbuild/\.github/workflows/image\.yml@' \
+  --certificate-identity-regexp '^https://github\.com/hoshsadiq/goreleaser-cgo-crossbuild/\.github/workflows/image\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Each workflow run also pushes two single-architecture tags named after the run id
-(`:<run-id>-amd64` and `:<run-id>-arm64`) and merges their digests into the
-version tags. Those run-id tags are breadcrumbs showing which builds the index was
-assembled from. They are unsigned, and nothing should pin them.
+A run that can publish also pushes a single-architecture tag per architecture named
+after the run id (`:<run-id>-amd64` and `:<run-id>-arm64`), merges those two
+digests into an index, signs the index, and only then adds the release tags: on a
+tag push `v1.2.3` that is `1.2.3` and `1.2`, and on the default branch (including
+the weekly rebuild) `latest`, the date and `sha-<7>`. The `v` is dropped, so the
+image tags do not match the git tag names.
+
+The run-id tags are breadcrumbs showing which builds an index was assembled from.
+They are unsigned, nothing should pin them, and nothing removes them.
 
 Mount the repository you are releasing at `/work`. That is the working directory
-and the only path whose mise configuration is trusted.
+and the only path whose mise configuration is trusted:
+
+```
+docker run --rm -it \
+  --volume "$PWD:/work" --workdir /work \
+  --env GITHUB_TOKEN \
+  ghcr.io/hoshsadiq/goreleaser-cgo-crossbuild@sha256:<digest> \
+  goreleaser release --clean
+```
 
 GoReleaser selects the compiler per target through `CC_<os>_<arch>` and
 `CXX_<os>_<arch>`:
@@ -95,8 +110,9 @@ builds:
 ```
 
 Keep the explicit list. `index` on a missing key returns an empty string rather
-than failing, so a target you forgot to list would be compiled by whatever `gcc`
-happens to be on `PATH`.
+than failing, so a target you forgot to list is compiled with an empty `CC`. Here
+that fails loudly rather than silently, because the image has no bare `gcc` on
+`PATH`, but the error arrives from cgo rather than from GoReleaser.
 
 Static linking for Linux goes in `ldflags`, alongside the toolchain choice:
 
@@ -121,6 +137,11 @@ fetched, with no prompt at all. With it, a configuration anywhere outside `/work
 is refused by `mise ls`, `mise env`, `mise exec` and the shims, while `/work` keeps
 working, including a repository that pins its own Go version.
 
+That refusal is not confined to mise itself: with the mount elsewhere, the shims
+stop resolving too, so `go`, `goreleaser`, `cosign` and `syft` all exit with the
+trust error rather than falling back to the versions baked into the image. Mount
+at `/work`.
+
 `MISE_YES` is deliberately absent. On its own it answers mise's trust prompt for
 any configuration anywhere, which would make the trusted-paths list pointless.
 `MISE_SAFE` is also absent: it blocks `_.file` in `[env]`, which is how many
@@ -130,6 +151,22 @@ does so silently.
 `git config --system --add safe.directory /work` is set because the mount is owned
 by the host user while the container is root, so git would otherwise refuse it as
 a dubious ownership. A repository mounted somewhere else needs its own entry.
+
+One assumption is worth naming: mise treats its own global configuration as
+trusted by definition, and that is `/mise/config.toml` here, which is where the
+pinned tools are recorded. Nothing should be mounted over `/mise`.
+
+## Darwin deployment target
+
+osxcross links against a default macOS deployment target older than the one Go
+stamps its objects with, so a Darwin build logs
+
+```
+ld: warning: object file (/tmp/go-link-XXXX/go.o) was built for newer macOS version (13.0) than being linked (11.0)
+```
+
+Set `MACOSX_DEPLOYMENT_TARGET` in the build environment (as a GoReleaser `env`
+entry) to silence it and to state the target your catalog requires.
 
 ## Checking an image
 
@@ -169,9 +206,12 @@ Running both architectures on one runner would put the musl stage under QEMU,
 where two GCC builds do not fit inside GitHub's six-hour cap.
 
 The two config scripts cross-make would fetch from `git.savannah.gnu.org` are
-instead downloaded from GCC's mirror and seeded into its sources directory before
-`make` runs, with a sha256 check. Savannah's git front-end is regularly
-unreachable, and a build that fails there dies before reaching a compiler.
+fetched from the same repository over the git protocol instead, at the revision
+cross-make's Makefile names, and written into its sources directory before `make`
+runs. The revision is read from the recipe rather than pinned here, and the
+content is checked against the sha256 values in the Dockerfile, since git's own
+transport is unencrypted. If a cross-make bump moves the revision, that check
+fails loudly instead of quietly using an older copy.
 
 ## Pinned versions
 
@@ -183,7 +223,8 @@ bumped on their own:
   beside it.
 - `MISE_VERSION` has `MISE_SHA256_AMD64` and `MISE_SHA256_ARM64`.
 - `GCC_MIRROR_COMMIT` has `CONFIG_GUESS_SHA256` and `CONFIG_SUB_SHA256` for the
-  two config scripts taken from that commit.
+  two config scripts, read out of cross-make's Makefile at build time and checked
+  against those digests.
 
 Neither project publishes checksums, so those values are the sha256 digests
 GitHub reports for the release assets:
@@ -193,8 +234,10 @@ gh api repos/mstorsjo/llvm-mingw/releases/tags/<version> --jq '.assets[].digest'
 gh api repos/jdx/mise/releases/tags/<version> --jq '.assets[].digest'
 ```
 
-A version bump without the matching digest change fails the build rather than
-fetching something new and unverified.
+Renovate bumps the version values, but not the digests beside them, so a bump PR
+arrives red until someone edits the matching digest. That is deliberate: it makes
+the digest a decision rather than a side effect. A version bump without it fails
+the build rather than fetching something new and unverified.
 
 The `cross-make` submodule is pinned deliberately. It decides the GCC, binutils,
 musl and Linux header versions and carries the musl patches, so bumping it changes
@@ -207,7 +250,7 @@ instead.
 
 The `goreleaser-cross` image it replaces is built on goreleaser's full toolchains
 image, so it also has `python3`, `jq`, `wget`, `cmake`, `autoconf`, `automake`,
-`bc`, `libtool`, `patch`, `rsync`, `unzip` and glibc cross toolchains for nine
+`bc`, `libtool`, `patch`, `mercurial`, `gdb` and glibc cross toolchains for nine
 Debian architectures. None of that is here. A release whose `before.hooks` runs
 Python, `jq` or `cmake` needs it added; a build that wants a glibc Linux binary
 rather than a static musl one needs a different image.

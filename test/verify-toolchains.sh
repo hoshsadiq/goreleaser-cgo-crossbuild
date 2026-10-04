@@ -141,7 +141,7 @@ for triple in x86_64-linux-musl aarch64-linux-musl; do
         printf '%s\n' "$search" | head -10 | sed 's/^/        /'
         failed
     # gcc indents every path in that list, so an anchored match needs the spaces.
-    elif printf '%s' "$search" | grep -qE '^[[:space:]]*/usr/include/?$'; then
+    elif printf '%s' "$search" | grep -qE '^[[:space:]]*/usr/(local/)?include(/|$)'; then
         printf 'FAIL  %-16s include search list reaches the host glibc headers at /usr/include:\n' "$triple"
         printf '%s\n' "$search" | head -10 | sed 's/^/        /'
         failed
@@ -151,22 +151,37 @@ for triple in x86_64-linux-musl aarch64-linux-musl; do
 done
 
 echo
-# goreleaser spells it --version; the rest take a version subcommand.
-for tool in mise go goreleaser cosign syft; do
-    args=(version)
-    [ "$tool" = goreleaser ] && args=(--version)
+# The Dockerfile records what it pinned in this file, so the versions are asserted
+# rather than merely printed: a pin that stopped being honoured would otherwise pass.
+versions_file=/etc/goreleaser-cgo-crossbuild-versions
+if [ ! -r "$versions_file" ]; then
+    printf 'FAIL  %-16s %s is missing\n' pins "$versions_file"
+    failed
+else
+    while IFS='=' read -r tool pin; do
+        [ -n "$tool" ] || continue
 
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        printf 'FAIL  %-16s not on PATH\n' "$tool"
-        failed
-        continue
-    fi
+        # goreleaser spells it --version; the rest take a version subcommand.
+        args=(version)
+        [ "$tool" = goreleaser ] && args=(--version)
 
-    # All of these print an ASCII banner before the version, so take the first
-    # line that looks like a version rather than the first line.
-    reported="$("$tool" "${args[@]}" 2>&1 | grep -m1 -E '[0-9]+\.[0-9]+' | sed 's/^ *//' | cut -c1-60)" || true
-    printf 'ok    %-16s %s\n' "$tool" "${reported:-present, no version line}"
-done
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            printf 'FAIL  %-16s not on PATH\n' "$tool"
+            failed
+            continue
+        fi
+
+        # These tools print an ASCII banner before the version, and some spell the
+        # pin with a leading v, so match on the version without it.
+        reported="$("$tool" "${args[@]}" 2>&1 || true)"
+        if printf '%s' "$reported" | grep -qF "${pin#v}"; then
+            printf 'ok    %-16s %s (pinned %s)\n' "$tool" "$(printf '%s' "$reported" | grep -m1 -E '[0-9]+\.[0-9]+' | sed 's/^ *//' | cut -c1-44)" "$pin"
+        else
+            printf 'FAIL  %-16s pinned %s but reports: %s\n' "$tool" "$pin" "$(printf '%s' "$reported" | head -2 | tr '\n' ' ' | cut -c1-70)"
+            failed
+        fi
+    done <"$versions_file"
+fi
 
 echo
 if [ "$failures" -ne 0 ]; then
