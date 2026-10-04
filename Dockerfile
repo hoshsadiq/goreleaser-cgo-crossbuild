@@ -30,6 +30,17 @@ ARG MUSL_TARGETS="x86_64-linux-musl aarch64-linux-musl"
 # small container VM.
 ARG MUSL_JOBS=
 
+# cross-make fetches these two from git.savannah.gnu.org while it unpacks sources
+# (Makefile:197-210), and that host's git front-end is regularly unreachable, which
+# fails the build before a compiler is built. No mirror of the exact revision it pins
+# is dependable either. Seeding the files it wants means make finds them and skips its
+# own download, at the cost of bypassing cross-make's sha1 check for them: these two
+# sha256 values are ours, recorded from GCC's mirror at the commit pinned here. They are
+# the same config.guess and config.sub that GCC ships.
+ARG GCC_MIRROR_COMMIT=a72c55f2a6eae4093fd378d6d5e37cb3f4737fd0
+ARG CONFIG_GUESS_SHA256=7d1e3c79b86de601c3a0457855ab854dffd15163f53c91edac54a7be2e9c931b
+ARG CONFIG_SUB_SHA256=71b8d73e46e0c31b1dc91ba5306f5ef0af009273b3bb283f31d8dad69666fa9e
+
 RUN apk add --no-cache \
         make curl bash patch gcc g++ musl-dev linux-headers \
         ca-certificates git gawk xz rsync file
@@ -37,24 +48,39 @@ RUN apk add --no-cache \
 COPY cross-make /build/cross-make
 WORKDIR /build/cross-make
 
+RUN set -eux; \
+    mkdir -p /build/cross-make/sources; \
+    for file in config.guess config.sub; do \
+        case "$file" in \
+            config.guess) want="$CONFIG_GUESS_SHA256" ;; \
+            config.sub) want="$CONFIG_SUB_SHA256" ;; \
+        esac; \
+        curl -fsSL --retry 5 --retry-delay 3 --proto '=https' --proto-redir '=https' \
+            -o "/build/cross-make/sources/$file" \
+            "https://raw.githubusercontent.com/gcc-mirror/gcc/${GCC_MIRROR_COMMIT}/$file"; \
+        printf '%s  %s\n' "$want" "/build/cross-make/sources/$file" >"/tmp/$file.sha256"; \
+        sha256sum -c "/tmp/$file.sha256"; \
+        rm -f "/tmp/$file.sha256"; \
+        chmod +x "/build/cross-make/sources/$file"; \
+    done
+
 # HOST= pins cross-make's OUTPUT at output-gcc/ either side of a submodule bump:
 # older revisions leave HOST empty, newer ones default it to "local", which
 # appends a -local suffix to the output directory.
 #
-# FREEBSD_VER/GLIBC_VER/MINGW_VER are cleared because cross-make's second,
-# unconditional `extract_all` prerequisite line (Makefile:320 at the pinned
-# commit) rebinds every SRC_DIRS entry and so defeats the per-target filter-out
-# directly above it. Left alone, a musl build also downloads FreeBSD, glibc and
-# mingw-w64 sources it never uses, and FreeBSD 14.3's base.txz is now a 404, so
-# the build dies before reaching a compiler. Clearing the three turns the eleven
-# requested tarballs into the eight a musl GCC build actually needs.
+# FREEBSD_VER/NETBSD_VER/GLIBC_VER/MINGW_VER are cleared because cross-make's second,
+# unconditional `extract_all` prerequisite line rebinds every SRC_DIRS entry and so
+# defeats the per-target filter-out directly above it. Left alone, a musl build also
+# downloads FreeBSD, NetBSD, glibc and mingw-w64 sources it never uses, and FreeBSD
+# 14.3's base.txz is now a 404, so the build dies before reaching a compiler. Clearing
+# them leaves exactly the sources a musl GCC build needs.
 #
 # They have to be make command-line assignments. Passed through the environment
 # they would lose to the Makefile's own `FREEBSD_VER = 14.3` and change nothing.
 RUN set -eux; \
     for target in $MUSL_TARGETS; do \
-        make "TARGET=$target" HOST= FREEBSD_VER= GLIBC_VER= MINGW_VER= -j"${MUSL_JOBS:-$(nproc)}"; \
-        make "TARGET=$target" HOST= FREEBSD_VER= GLIBC_VER= MINGW_VER= install; \
+        make "TARGET=$target" HOST= FREEBSD_VER= NETBSD_VER= GLIBC_VER= MINGW_VER= -j"${MUSL_JOBS:-$(nproc)}"; \
+        make "TARGET=$target" HOST= FREEBSD_VER= NETBSD_VER= GLIBC_VER= MINGW_VER= install; \
         make clean; \
     done; \
     # cross-make's install leaves usr -> . behind for its own build-time paths.
@@ -121,16 +147,24 @@ LABEL org.opencontainers.image.licenses="MIT"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV MISE_DATA_DIR=/mise
 ENV MISE_GLOBAL_CONFIG_FILE=/mise/config.toml
-# Only the mount point is trusted. MISE_YES must stay unset: it answers mise's
-# trust prompt for any config anywhere, which would make this list pointless. A
-# config outside /work is refused with an error, which is the intent.
+# Only the mount point is trusted, and MISE_YES is deliberately absent from this
+# image: on its own it answers mise's trust prompt for any configuration anywhere,
+# which would make the trusted-paths list pointless. Paranoid mode is on because in
+# normal mode mise exempts a configuration whose only content is plain [tools] pins, so
+# a tools-only mise.toml anywhere on the filesystem is honoured and its tools fetched
+# without a prompt. Under paranoid mode /work still works and that config is refused.
 ENV MISE_TRUSTED_CONFIG_PATHS=/work
+ENV MISE_PARANOID=1
 ENV OSX_CROSS_PATH=/usr/local/osxcross
 
 # file is for test/verify-toolchains.sh. libxml2 is here because osxcross's ld64
 # and xar link against it and the upstream osxcross image does not carry a copy.
-# llvm is here for dsymutil: Go's darwin cgo builds invoke it unless the build is
-# stripped, and without it a plain `go build` for darwin fails outright.
+# llvm is here for dsymutil, and the dependency is hard: Go runs a bare `dsymutil`
+# from PATH for an unstripped darwin cgo build, and fails the link with
+# `running dsymutil failed: executable file not found in $PATH` when there is none.
+# Neither the osxcross image nor llvm-mingw puts a bare dsymutil on PATH, because
+# osxcross names its own after the target (arm64-apple-darwin25.1-dsymutil) and Go
+# does not look there. Passing -w in ldflags is the only way to avoid the call.
 # make and pkg-config are here because cgo dependencies commonly want them, and
 # the image this replaces carried them. zip and tar stay for consumers whose
 # release hooks want them. GoReleaser itself does not shell out to zip.
@@ -143,7 +177,7 @@ RUN set -eux; \
     # GoReleaser runs `git describe` on the mounted repository. The mount is owned
     # by the host user and the container is root, so git's ownership check would
     # refuse it as a dubious ownership unless the image opts out.
-    git config --system --add safe.directory '*'; \
+    git config --system --add safe.directory /work; \
     case "$TARGETARCH" in \
         amd64) mise_arch=x64; mise_sha="$MISE_SHA256_AMD64" ;; \
         arm64) mise_arch=arm64; mise_sha="$MISE_SHA256_ARM64" ;; \
@@ -160,7 +194,7 @@ RUN set -eux; \
         "goreleaser@${GORELEASER_VERSION}" \
         "cosign@${COSIGN_VERSION}" \
         "syft@${SYFT_VERSION}"; \
-    rm -rf /mise/downloads
+    rm -rf /mise/downloads /root/.local/state/mise/trusted-configs
 
 COPY --from=osxcross "${OSX_CROSS_PATH}" "${OSX_CROSS_PATH}"
 COPY --from=musl-builder /build/cross-make/output-gcc/ /usr/local/

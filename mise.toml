@@ -13,8 +13,9 @@ run = [
 
 [tasks."image:build"]
 description = "Build the crossbuild image for the host architecture"
-# The submodule is the musl toolchain recipe; without it the build fails with an
-# opaque checksum error rather than saying what is missing.
+# The submodule is the musl toolchain recipe. Without it the build fails with
+# `make: *** No targets specified and no makefile found. Stop.`, which says nothing
+# about the missing submodule, so it is initialised here.
 run = "git submodule update --init --recursive && docker buildx build --tag goreleaser-cgo-crossbuild:dev --load ."
 
 [tasks."image:verify"]

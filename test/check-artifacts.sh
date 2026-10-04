@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
 # Runs inside the image, after test/release-snapshot.sh has produced dist/. Checks
-# that the snapshot release produced all six targets and that each one is the format
-# it should be: static musl for Linux, Mach-O for Darwin, PE for Windows.
+# that the snapshot release produced all six targets, that each one is the format it
+# should be (static musl for Linux, Mach-O for Darwin, PE for Windows), and that the
+# archive and checksum steps ran too.
 set -euo pipefail
 
+failures=0
+failed() { failures=$((failures + 1)); }
+
 descriptions=""
-for binary in $(find dist -type f \( -name fixture -o -name fixture.exe \) | sort); do
+while IFS= read -r binary; do
     description="$(file -b "$binary")"
     printf '%-40s %s\n' "${binary#dist/}" "$description"
     descriptions="${descriptions}${description}"$'\n'
-done
+done < <(find dist -type f \( -name fixture -o -name fixture.exe \) | sort)
 
 count="$(printf '%s' "$descriptions" | grep -c . || true)"
 if [ "$count" -ne 6 ]; then
     echo "expected 6 binaries, found $count" >&2
-    exit 1
+    failed
 fi
 
 while IFS= read -r want; do
     if ! printf '%s' "$descriptions" | grep -qF "$want"; then
         echo "no artefact reported: $want" >&2
-        exit 1
+        failed
     fi
 done <<'WANT'
 ELF 64-bit
@@ -35,7 +39,26 @@ WANT
 static="$(printf '%s' "$descriptions" | grep -c 'static' || true)"
 if [ "$static" -ne 2 ]; then
     echo "expected the two linux binaries to be static, found $static" >&2
+    failed
+fi
+
+# A release that built the binaries but skipped the archive or checksum steps would
+# otherwise pass, and those are the files a consumer actually downloads.
+archives="$(find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l | tr -d ' ')"
+if [ "$archives" -ne 6 ]; then
+    echo "expected 6 archives, found $archives" >&2
+    failed
+fi
+
+checksums="$(find dist -maxdepth 1 -type f -name '*checksums.txt' | wc -l | tr -d ' ')"
+if [ "$checksums" -ne 1 ]; then
+    echo "expected one checksums file, found $checksums" >&2
+    failed
+fi
+
+if [ "$failures" -ne 0 ]; then
+    echo "$failures check(s) failed"
     exit 1
 fi
 
-echo "six targets built, two of them static musl"
+echo "six targets built, two of them static musl, with archives and checksums"

@@ -140,7 +140,8 @@ for triple in x86_64-linux-musl aarch64-linux-musl; do
         printf 'FAIL  %-16s include search list never mentions %s:\n' "$triple" "$triple"
         printf '%s\n' "$search" | head -10 | sed 's/^/        /'
         failed
-    elif printf '%s' "$search" | grep -qxF '/usr/include'; then
+    # gcc indents every path in that list, so an anchored match needs the spaces.
+    elif printf '%s' "$search" | grep -qE '^[[:space:]]*/usr/include/?$'; then
         printf 'FAIL  %-16s include search list reaches the host glibc headers at /usr/include:\n' "$triple"
         printf '%s\n' "$search" | head -10 | sed 's/^/        /'
         failed

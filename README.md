@@ -9,8 +9,9 @@ them in one image means a single `goreleaser release` can produce every target
 instead of shelling out per platform.
 
 Forked from [goreleaser/goreleaser-cross-toolchains](https://github.com/goreleaser/goreleaser-cross-toolchains),
-which is where the llvm-mingw and osxcross recipes come from and where upstream
-toolchain bumps land.
+which is where the llvm-mingw and osxcross recipes came from. Upstream's release
+machinery is dropped here, so toolchain versions are bumped in this repository
+rather than merged from there.
 
 ## What is inside
 
@@ -42,9 +43,12 @@ depends on the llvm-mingw clang that comes later in `PATH`. `/llvm-mingw/bin`
 cannot be dropped from `PATH` without breaking Darwin builds even though Darwin
 never runs a Windows compiler.
 
-Go's Darwin cgo builds also invoke `dsymutil`, so the final stage installs
-`llvm` for it. A build that passes `-s` or `-w` in `ldflags` would not notice its
-absence, which is a trap worth knowing about.
+Go also links an unstripped Darwin cgo build through a bare `dsymutil` taken from
+`PATH`, so the final stage installs `llvm` for it. Without one the link fails
+outright, and `-w` in `ldflags` is the only way to avoid the call: `-s` alone does
+not. The copy osxcross ships is named after the target
+(`arm64-apple-darwin25.1-dsymutil`) and Go never looks for that name, so the
+osxcross image on its own is not enough.
 
 ## Using it
 
@@ -53,9 +57,14 @@ compose file is for humans; the digest is what decides which image runs.
 
 ```
 cosign verify ghcr.io/hoshsadiq/goreleaser-cgo-crossbuild@sha256:<digest> \
-  --certificate-identity-regexp '^https://github.com/hoshsadiq/goreleaser-cgo-crossbuild/' \
+  --certificate-identity-regexp '^https://github.com/hoshsadiq/goreleaser-cgo-crossbuild/\.github/workflows/image\.yml@' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+Each workflow run also pushes two single-architecture tags named after the run id
+(`:<run-id>-amd64` and `:<run-id>-arm64`) and merges their digests into the
+version tags. Those run-id tags are breadcrumbs showing which builds the index was
+assembled from. They are unsigned, and nothing should pin them.
 
 Mount the repository you are releasing at `/work`. That is the working directory
 and the only path whose mise configuration is trusted.
@@ -105,17 +114,22 @@ The container runs as root, and a repository mounted at `/work` is trusted: its
 `mise.toml` may select tool versions, and mise will fetch them. Mount only a
 repository you would run a release for.
 
-Nothing else is trusted. A mise configuration outside `/work` is refused by
-`mise ls`, `mise env` and the shims, each with an error rather than a silent
-fallback. One path in mise 2026.10.1 does not apply that gate: `mise exec` reads
-the tool pins from an untrusted configuration and will fetch them. That is a
-behaviour of mise rather than a setting, and it is not on the path a release
-takes, since GoReleaser resolves `go` and `git` through the shims.
+Nothing else is trusted. `MISE_PARANOID` is set because in its normal mode mise
+exempts a configuration whose only content is plain `[tools]` pins: without it a
+tools-only `mise.toml` anywhere on the filesystem would be honoured, and its tools
+fetched, with no prompt at all. With it, a configuration anywhere outside `/work`
+is refused by `mise ls`, `mise env`, `mise exec` and the shims, while `/work` keeps
+working, including a repository that pins its own Go version.
 
-The environment tries to keep the two settings that make trust meaningless out of
-the image. `MISE_YES` answers mise's trust prompt for any configuration anywhere.
-`MISE_SAFE` blocks `_.file` in `[env]`, which is how many repositories (including
-the one this image was built for) load a `.env`, and it does so silently.
+`MISE_YES` is deliberately absent. On its own it answers mise's trust prompt for
+any configuration anywhere, which would make the trusted-paths list pointless.
+`MISE_SAFE` is also absent: it blocks `_.file` in `[env]`, which is how many
+repositories (including the one this image was built for) load a `.env`, and it
+does so silently.
+
+`git config --system --add safe.directory /work` is set because the mount is owned
+by the host user while the container is root, so git would otherwise refuse it as
+a dubious ownership. A repository mounted somewhere else needs its own entry.
 
 ## Checking an image
 
@@ -154,20 +168,22 @@ The workflow gives each architecture a native runner and a five-hour budget.
 Running both architectures on one runner would put the musl stage under QEMU,
 where two GCC builds do not fit inside GitHub's six-hour cap.
 
-The stage also fetches `config.guess` and `config.sub` from
-`git.savannah.gnu.org`, which is not reachable from every network. GitHub runners
-can reach it; a local build behind a restrictive network cannot, and fails with
-`make: *** [Makefile:207: sources/config.guess] Error 28`.
+The two config scripts cross-make would fetch from `git.savannah.gnu.org` are
+instead downloaded from GCC's mirror and seeded into its sources directory before
+`make` runs, with a sha256 check. Savannah's git front-end is regularly
+unreachable, and a build that fails there dies before reaching a compiler.
 
 ## Pinned versions
 
 Every version is an ARG default at the top of the stages in `Dockerfile`, and
-Renovate bumps them along with the base image digests. Two of them cannot be
+Renovate bumps them along with the base image digests. Three of them cannot be
 bumped on their own:
 
 - `LLVM_MINGW_VERSION` has `LLVM_MINGW_SHA256_AMD64` and `LLVM_MINGW_SHA256_ARM64`
   beside it.
 - `MISE_VERSION` has `MISE_SHA256_AMD64` and `MISE_SHA256_ARM64`.
+- `GCC_MIRROR_COMMIT` has `CONFIG_GUESS_SHA256` and `CONFIG_SUB_SHA256` for the
+  two config scripts taken from that commit.
 
 Neither project publishes checksums, so those values are the sha256 digests
 GitHub reports for the release assets:
@@ -179,6 +195,13 @@ gh api repos/jdx/mise/releases/tags/<version> --jq '.assets[].digest'
 
 A version bump without the matching digest change fails the build rather than
 fetching something new and unverified.
+
+The `cross-make` submodule is pinned deliberately. It decides the GCC, binutils,
+musl and Linux header versions and carries the musl patches, so bumping it changes
+the Linux toolchain: read the versions in `cross-make/Makefile` and run the
+toolchain check afterwards. The two config scripts are the one thing the recipe
+fetches that the submodule pin does not cover, which is why they are pinned above
+instead.
 
 ## What this image does not carry
 
