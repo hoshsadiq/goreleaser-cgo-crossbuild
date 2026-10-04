@@ -1,0 +1,66 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "git-submodules": {
+    "enabled": true
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bump the pinned tool versions in the Dockerfile ARG defaults",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG MISE_VERSION=v?(?<currentValue>\\S+)"],
+      "depNameTemplate": "jdx/mise",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Bump the pinned tool versions in the Dockerfile ARG defaults",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG GO_VERSION=(?<currentValue>\\S+)"],
+      "depNameTemplate": "go",
+      "datasourceTemplate": "golang-version",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Bump the pinned tool versions in the Dockerfile ARG defaults",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG GORELEASER_VERSION=v?(?<currentValue>\\S+)"],
+      "depNameTemplate": "goreleaser/goreleaser",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Bump the pinned tool versions in the Dockerfile ARG defaults",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG COSIGN_VERSION=v?(?<currentValue>\\S+)"],
+      "depNameTemplate": "sigstore/cosign",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Bump the pinned tool versions in the Dockerfile ARG defaults",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG SYFT_VERSION=v?(?<currentValue>\\S+)"],
+      "depNameTemplate": "anchore/syft",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Bump the pinned tool versions in the Dockerfile ARG defaults",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG LLVM_MINGW_VERSION=(?<currentValue>\\S+)"],
+      "depNameTemplate": "mstorsjo/llvm-mingw",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "loose"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+[tasks."image:build"]
+description = "Build the crossbuild image for the host architecture"
+run = "docker buildx build --tag goreleaser-cgo-crossbuild:dev --load ."
+
+[tasks."image:verify"]
+description = "Build the image and check all six toolchains inside it"
+depends = ["image:build"]
+run = "docker run --rm --volume \"$PWD:/src:ro\" --workdir /src goreleaser-cgo-crossbuild:dev bash test/verify-toolchains.sh"
