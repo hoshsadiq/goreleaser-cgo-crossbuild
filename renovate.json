@@ -4,6 +4,7 @@
     "config:recommended",
     "helpers:pinGitHubActionDigests"
   ],
+  "dependencyDashboard": false,
   "git-submodules": {
     "enabled": true
   },

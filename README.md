@@ -216,15 +216,18 @@ fails loudly instead of quietly using an older copy.
 ## Pinned versions
 
 Every version is an ARG default at the top of the stages in `Dockerfile`, and
-Renovate bumps them along with the base image digests. Three of them cannot be
-bumped on their own:
+Renovate is configured to bump them along with the base image digests. That
+assumes the Renovate app is installed on this repository: there is no Dependabot
+config, so nothing else will move them, and with issues disabled the dependency
+dashboard is switched off in `renovate.json`. Three of them cannot be bumped on
+their own:
 
 - `LLVM_MINGW_VERSION` has `LLVM_MINGW_SHA256_AMD64` and `LLVM_MINGW_SHA256_ARM64`
   beside it.
 - `MISE_VERSION` has `MISE_SHA256_AMD64` and `MISE_SHA256_ARM64`.
-- `GCC_MIRROR_COMMIT` has `CONFIG_GUESS_SHA256` and `CONFIG_SUB_SHA256` for the
-  two config scripts, read out of cross-make's Makefile at build time and checked
-  against those digests.
+- the two config scripts have `CONFIG_GUESS_SHA256` and `CONFIG_SUB_SHA256`. Their
+  revision is read out of cross-make's Makefile at build time, so those two
+  digests are what changes with it.
 
 Neither project publishes checksums, so those values are the sha256 digests
 GitHub reports for the release assets:
@@ -250,10 +253,12 @@ instead.
 
 The `goreleaser-cross` image it replaces is built on goreleaser's full toolchains
 image, so it also has `python3`, `jq`, `wget`, `cmake`, `autoconf`, `automake`,
-`bc`, `libtool`, `patch`, `mercurial`, `gdb` and glibc cross toolchains for nine
-Debian architectures. None of that is here. A release whose `before.hooks` runs
-Python, `jq` or `cmake` needs it added; a build that wants a glibc Linux binary
-rather than a static musl one needs a different image.
+`bc`, `libtool`, `patch`, `mercurial`, `gdb`, `openssl` and glibc cross toolchains
+for nine Debian architectures. None of that is here, and there is no `docker`
+client or daemon either, so a GoReleaser `dockers:` or `dockers_v2:` block cannot
+run in this image. A release whose `before.hooks` runs Python, `jq` or `cmake`
+needs it added; a build that wants a glibc Linux binary rather than a static musl
+one, or that publishes a container image, needs a different image.
 
 ## The macOS SDK
 
