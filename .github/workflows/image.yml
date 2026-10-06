@@ -74,7 +74,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Loaded into the runner so the checks below can run the image, PRs included.
       - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
@@ -120,7 +119,6 @@ jobs:
   publish:
     name: publish
     needs: build
-    # Tags and main only: a branch dispatch builds and verifies without publishing.
     if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -146,9 +144,7 @@ jobs:
           merge-multiple: true
           path: digests
 
-      # From the digests the build jobs reported, never from a tag: a tag can be
-      # overwritten between jobs, and the signature is only worth something if it
-      # covers what the build produced.
+      # From the digests the build jobs reported, not from a tag that can be moved.
       - name: Merge the two architectures
         id: merge
         run: |
@@ -162,7 +158,6 @@ jobs:
           echo "digest=${digest}" >>"$GITHUB_OUTPUT"
           echo "merged index is ${IMAGE}@${digest}"
 
-      # Sign the digest keylessly, or pinning it means nothing.
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
@@ -171,7 +166,6 @@ jobs:
           DIGEST: ${{ steps.merge.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
-      # Before the release tags exist, so a failed signature cannot leave tags behind.
       - name: Verify the signature
         env:
           DIGEST: ${{ steps.merge.outputs.digest }}
@@ -181,7 +175,6 @@ jobs:
             --certificate-identity-regexp "^https://github\.com/${REPOSITORY}/\.github/workflows/image\.yml@" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-      # A tag push publishes that version; the default branch publishes a rolling set.
       - name: Tag the release
         env:
           DIGEST: ${{ steps.merge.outputs.digest }}

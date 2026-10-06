@@ -46,7 +46,6 @@ int main() {
 EOF
 }
 
-# compile <label> <compiler> <source> <output> [flags...]
 compile() {
     local label="$1" compiler="$2" source="$3" output="$4"
     shift 4
@@ -64,7 +63,6 @@ compile() {
     fi
 }
 
-# check_binary <label> <binary> <expected substring>...
 check_binary() {
     local label="$1" binary="$2" described want
     shift 2
@@ -94,7 +92,6 @@ split_expectations() {
     tr ',' '\n' <<<"$expectations" | grep -v '^$' || true
 }
 
-# check_target <label> <cc> <cxx> <flags> <extension> <expectations>
 check_target() {
     local label="$1" cc="$2" cxx="$3" flags="$4" extension="$5" expectations="$6"
     local flags_list=() expectations_list=()
@@ -128,8 +125,7 @@ windows/arm64|/llvm-mingw/bin/aarch64-w64-mingw32-gcc|/llvm-mingw/bin/aarch64-w6
 TARGETS
 }
 
-# A musl compiler that reached the host's glibc headers would still link a
-# hello-world, so the search list is checked directly, indentation and all.
+# A compiler reaching the host's headers still links a hello-world.
 check_sysroots() {
     local triple cc sysroot search
 
@@ -156,7 +152,6 @@ check_sysroots() {
     done
 }
 
-# Asserted, not printed: a pin the image stopped honouring would otherwise pass.
 check_tools() {
     local versions_file=/etc/goreleaser-cgo-crossbuild-versions
     local tool pin args reported

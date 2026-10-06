@@ -2,16 +2,15 @@
 
 FROM ghcr.io/goreleaser/goreleaser-osxcross:v26.1.1@sha256:19aaaee7baa7948e18aa91d435b82f053b722fa7b6fcf9b8482794f067073532 AS osxcross
 
-# Alpine builds the musl toolchains; the final stage cannot be Alpine because the
-# osxcross binaries are glibc-linked. cross-make links its own compilers statically.
+# osxcross is glibc-linked, so the final stage cannot be Alpine.
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8 AS musl-builder
 
 ARG MUSL_TARGETS="x86_64-linux-musl aarch64-linux-musl i686-linux-musl"
 ARG MUSL_JOBS=
 
-# Savannah is regularly unreachable and the build dies there, so these two are
-# fetched here instead. The revision comes from cross-make's Makefile, and a bump
-# that moves it fails the check below rather than silently using an older copy.
+# Savannah is regularly unreachable and the build dies there. The revision comes
+# from cross-make's Makefile, so a bump that moves it fails the check below rather
+# than silently keeping an older copy.
 ARG CONFIG_GUESS_SHA256=50205cf3ec5c7615b17f937a0a57babf4ec5cd0aade3d7b3cccbe5f1bf91a7ef
 ARG CONFIG_SUB_SHA256=26b852f75a637448360a956931439f7e818bf63150eaadb9b85484347628d1fd
 
@@ -39,11 +38,10 @@ RUN set -eux; \
     done; \
     rm -rf /tmp/config
 
-# HOST= keeps the output directory named output-gcc/. The *_VER overrides have to be
-# command-line assignments, not environment: an environment value loses to the
-# Makefile's own. Without them cross-make's unconditional extract_all prerequisites
-# also pull FreeBSD, NetBSD, glibc and mingw sources no musl build uses, and FreeBSD
-# 14.3's tarball is a 404.
+# HOST= keeps the output directory named output-gcc/. The *_VER overrides must be
+# command-line assignments, not environment, or the Makefile's own values win and
+# extract_all also pulls the FreeBSD, NetBSD, glibc and mingw sources no musl build
+# uses (and FreeBSD 14.3's tarball is a 404).
 RUN set -eux; \
     for target in $MUSL_TARGETS; do \
         make "TARGET=$target" HOST= FREEBSD_VER= NETBSD_VER= GLIBC_VER= MINGW_VER= -j"${MUSL_JOBS:-$(nproc)}"; \
@@ -57,7 +55,6 @@ FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# llvm-mingw publishes no checksums, so these are GitHub's digests for the assets.
 ARG LLVM_MINGW_VERSION=20260922
 ARG LLVM_MINGW_HOST=ubuntu-22.04
 ARG LLVM_MINGW_SHA256_AMD64=bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21
@@ -105,8 +102,8 @@ ENV MISE_TRUSTED_CONFIG_PATHS=/work
 ENV MISE_PARANOID=1
 ENV OSX_CROSS_PATH=/usr/local/osxcross
 
-# libxml2 for osxcross's ld64 and xar, llvm for the dsymutil Go looks for when it
-# links an unstripped darwin cgo binary.
+# libxml2 is what osxcross's ld64 and xar link against; llvm is what Go's dsymutil
+# lookup needs for an unstripped darwin cgo link.
 RUN set -eux; \
     apt-get update; \
     apt-get install --no-install-recommends -y \

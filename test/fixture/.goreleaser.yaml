@@ -1,7 +1,5 @@
-# A seven-target cgo release, deliberately close to a real consumer's config, so a
-# green run means the whole path works: GoReleaser, the Go toolchain, cgo and every C
-# compiler in the image. The CC_/CXX_ list is explicit because `index` on a missing key
-# returns an empty string rather than failing.
+# Seven-target cgo release, close to a real consumer's config. The CC_/CXX_ list is
+# explicit because `index` on a missing key returns an empty string, not an error.
 version: 2
 
 project_name: fixture
@@ -40,15 +38,13 @@ builds:
       - amd64
       - arm64
       - "386"
-    # There is no 32-bit darwin toolchain, and windows/386 is left out because the
-    # image is not asked to prove llvm-mingw's i686 target.
+    # No 32-bit darwin toolchain exists, and windows/386 is not what this proves.
     ignore:
       - goos: darwin
         goarch: "386"
       - goos: windows
         goarch: "386"
-    # Left unstripped on purpose: Go runs dsymutil for an unstripped darwin cgo build,
-    # so this is what makes the test catch an image without one.
+    # Unstripped on purpose: this is what makes the test need dsymutil.
     ldflags:
       - '{{ if eq .Os "linux" }}-extldflags "-static"{{ end }}'
 

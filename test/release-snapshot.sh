@@ -23,7 +23,6 @@ prepare_fixture() {
     git -C "$work" -c user.email=fixture@example.com -c user.name=fixture commit -qm fixture
 }
 
-# The mounted repository's pins must win over the image's.
 check_mounted_pin() {
     local reported
     printf '[tools]\ngo = "1.26.6"\n' >"$work/mise.toml"
