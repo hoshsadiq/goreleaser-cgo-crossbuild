@@ -35,7 +35,12 @@ check_mounted_pin() {
 }
 
 cleanup() {
-    [ "${KEEP:-0}" = "1" ] || rm -rf "$work"
+    [ "${KEEP:-0}" = "1" ] && return 0
+    # GoReleaser writes as root in the container, so its output is root-owned here
+    # and the host cannot remove it. Clear the mount from inside first, then the
+    # directory itself; a failure to tidy up must not fail the run.
+    run_in_image sh -c 'rm -rf /work/* /work/.[!.]*' >/dev/null 2>&1 || true
+    rm -rf "$work" 2>/dev/null || true
 }
 
 main() {
