@@ -204,11 +204,16 @@ six-hour cap.
 
 cross-make fetches `config.guess` and `config.sub` from `git.savannah.gnu.org`
 while unpacking sources, and that host is regularly unreachable, which kills the
-build before a compiler is built. This image fetches them from the same repository
-over the git protocol, at the revision cross-make's Makefile names, and checks the
-content against the sha256 values in the Dockerfile. The revision is read from the
-recipe rather than pinned here, so a submodule bump that moves it fails that check
-instead of quietly leaving an older copy in place.
+build before a compiler is built. Both files are committed under `gnu-config/`
+instead, taken from the revision cross-make's Makefile pins, with their sha256 in
+the Dockerfile. A build-time guard compares that revision against the one in
+`cross-make/Makefile` and fails if a submodule bump moves it, so the copy cannot go
+stale without saying so.
+
+nixpkgs solves the same problem by pinning the two files by hash and fetching them
+from a cgit URL (`pkgs/by-name/gn/gnu-config`). That is the right shape, but when
+the host is down the fetch still fails, so the files are committed here and nothing
+is fetched at build time.
 
 ## Pinned versions
 
