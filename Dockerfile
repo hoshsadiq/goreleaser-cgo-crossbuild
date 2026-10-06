@@ -7,6 +7,7 @@ FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9
 
 ARG MUSL_TARGETS="x86_64-linux-musl aarch64-linux-musl i686-linux-musl"
 ARG MUSL_JOBS=
+ARG GNU_SITE=https://mirrors.kernel.org/gnu
 
 # cross-make fetches config.guess and config.sub from Savannah, which is regularly
 # unreachable, so they are committed here at the revision its Makefile pins. The
@@ -46,10 +47,14 @@ RUN set -eux; \
 # command-line assignments, not environment, or the Makefile's own values win and
 # extract_all also pulls the FreeBSD, NetBSD, glibc and mingw sources no musl build
 # uses (and FreeBSD 14.3's tarball is a 404).
+#
+# GNU_SITE defaults to ftpmirror.gnu.org, which is GNU's own infrastructure and was
+# unreachable for hours, failing the build on a curl timeout. kernel.org's mirror
+# serves the same tarballs byte for byte; their sha1s are cross-make's.
 RUN set -eux; \
     for target in $MUSL_TARGETS; do \
-        make "TARGET=$target" HOST= FREEBSD_VER= NETBSD_VER= GLIBC_VER= MINGW_VER= -j"${MUSL_JOBS:-$(nproc)}"; \
-        make "TARGET=$target" HOST= FREEBSD_VER= NETBSD_VER= GLIBC_VER= MINGW_VER= install; \
+        make "TARGET=$target" HOST= FREEBSD_VER= NETBSD_VER= GLIBC_VER= MINGW_VER= GNU_SITE="$GNU_SITE" -j"${MUSL_JOBS:-$(nproc)}"; \
+        make "TARGET=$target" HOST= FREEBSD_VER= NETBSD_VER= GLIBC_VER= MINGW_VER= GNU_SITE="$GNU_SITE" install; \
         make clean; \
     done; \
     rm -f output-gcc/usr; \
