@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Every target the fixture asks for: static musl ELF for linux, Mach-O for darwin,
-# PE for windows. The count is one per target because a missing artefact should
-# fail rather than pass silently.
 targets=7
 static_targets=3
 
@@ -66,7 +63,7 @@ check_archives() {
         failed
     fi
 
-    # Only the tarballs: the image has no unzip, and the checksums below cover the rest.
+    # Tarballs only: the image has no unzip, and the checksums cover the rest.
     for archive in "${archives[@]}"; do
         case "$archive" in
             *.tar.gz)

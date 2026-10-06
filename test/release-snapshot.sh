@@ -4,12 +4,13 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${IMAGE:-goreleaser-cgo-crossbuild:dev}"
 
-# The fixture is copied inside the checkout rather than to /tmp, because on macOS a
-# /tmp path is not visible to the container VM.
+# Inside the checkout, not /tmp: on macOS the container VM cannot see /tmp.
 work="$repo/tmp/release-snapshot"
 
 run_in_image() {
-    docker run --rm --workdir /work --volume "$work:/work" "$IMAGE" "$@"
+    docker run --rm --workdir /work --volume "$work:/work" \
+        --volume "$repo/test/check-artifacts.sh:/check-artifacts.sh:ro" \
+        "$IMAGE" "$@"
 }
 
 prepare_fixture() {
@@ -22,8 +23,7 @@ prepare_fixture() {
     git -C "$work" -c user.email=fixture@example.com -c user.name=fixture commit -qm fixture
 }
 
-# A repository mounted at /work keeping its own tool pins is the image's central
-# promise, so the fixture pins an older Go and the run must use it.
+# The mounted repository's pins must win over the image's.
 check_mounted_pin() {
     local reported
     printf '[tools]\ngo = "1.26.6"\n' >"$work/mise.toml"
@@ -35,12 +35,6 @@ check_mounted_pin() {
     esac
 }
 
-check_artifacts() {
-    docker run --rm --workdir /work --volume "$work:/work" \
-        --volume "$repo/test/check-artifacts.sh:/check-artifacts.sh:ro" \
-        "$IMAGE" bash /check-artifacts.sh
-}
-
 cleanup() {
     [ "${KEEP:-0}" = "1" ] || rm -rf "$work"
 }
@@ -49,7 +43,7 @@ main() {
     prepare_fixture
     check_mounted_pin
     run_in_image goreleaser release --snapshot --clean
-    check_artifacts
+    run_in_image bash /check-artifacts.sh
     cleanup
 }
 

@@ -75,14 +75,18 @@ check_binary() {
     fi
 
     described="$(file -b "$binary")"
-    pass "$label" "$described"
 
+    local missing=()
     for want in "$@"; do
         [ -n "$want" ] || continue
-        if ! printf '%s' "$described" | grep -qF "$want"; then
-            fail "$label" "expected \"$want\" in: $described"
-        fi
+        printf '%s' "$described" | grep -qF "$want" || missing+=("$want")
     done
+
+    if [ "${#missing[@]}" -ne 0 ]; then
+        fail "$label" "$described (missing: ${missing[*]})"
+        return
+    fi
+    pass "$label" "$described"
 }
 
 split_expectations() {
@@ -109,9 +113,7 @@ check_target() {
 }
 
 check_targets() {
-    # label|cc|cxx|flags|extension|expected substrings. Windows needs the extension
-    # because the mingw driver appends .exe; the linux rows say "static" because
-    # these compilers default to PIE and report "static-pie linked".
+    # label|cc|cxx|flags|extension|expected substrings
     while IFS='|' read -r label cc cxx flags extension expectations; do
         [ -n "$label" ] || continue
         check_target "$label" "$cc" "$cxx" "$flags" "$extension" "$expectations"
@@ -127,7 +129,7 @@ TARGETS
 }
 
 # A musl compiler that reached the host's glibc headers would still link a
-# hello-world, so the include search list is checked directly. gcc indents it.
+# hello-world, so the search list is checked directly, indentation and all.
 check_sysroots() {
     local triple cc sysroot search
 
@@ -154,8 +156,7 @@ check_sysroots() {
     done
 }
 
-# The versions are asserted, not printed: a pin the image stopped honouring would
-# otherwise pass. The file is written by the Dockerfile.
+# Asserted, not printed: a pin the image stopped honouring would otherwise pass.
 check_tools() {
     local versions_file=/etc/goreleaser-cgo-crossbuild-versions
     local tool pin args reported
@@ -176,7 +177,6 @@ check_tools() {
             continue
         fi
 
-        # These print a banner before the version, and the pin may carry a leading v.
         reported="$("$tool" "${args[@]}" 2>&1 || true)"
         if printf '%s' "$reported" | grep -qF "${pin#v}"; then
             pass "$tool" "$(printf '%s' "$reported" | grep -m1 -E '[0-9]+\.[0-9]+' | sed 's/^ *//' | cut -c1-44) (pinned $pin)"

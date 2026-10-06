@@ -6,14 +6,12 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
-  # The toolchains come from pinned downloads and a submodule upstream moves on its
-  # own schedule, so rebuild weekly rather than only when this repo changes.
+  # The toolchains move without this repo changing, so rebuild weekly.
   schedule:
     - cron: "0 4 * * 1"
 
-# Cancelling a superseded pull request run is right; cancelling a superseded main or
-# tag run would throw away hours of toolchain build and could leave the architecture
-# images pushed without a merged index beside them.
+# A superseded pull request run is worth cancelling; a main or tag run is not, since
+# the architecture images are already pushed by then.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -39,9 +37,8 @@ jobs:
       - name: hadolint, actionlint, shellcheck
         run: mise run check
 
-  # One job per architecture, each on a native runner. Doing both on one runner puts
-  # the whole musl stage under QEMU, which is how two full GCC builds turn into a
-  # job that cannot finish inside GitHub's six-hour cap.
+  # Native runners: the musl stage compiles GCC for the image's own architecture, so
+  # a shared runner would run that build under QEMU and miss the six-hour cap.
   build:
     name: build ${{ matrix.platform }}
     needs: check
@@ -77,9 +74,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Built into the runner rather than pushed straight from Buildx, so the two
-      # verification steps below can run the image on every path, pull requests
-      # included.
+      # Loaded into the runner so the checks below can run the image, PRs included.
       - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
@@ -90,19 +85,15 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
-      # A build only proves the compilers copied. This proves they compile.
       - name: Verify every toolchain
         run: docker run --rm -i --entrypoint bash "${{ env.IMAGE }}:${{ matrix.arch }}" -s < test/verify-toolchains.sh
 
-      # The same compilers driven by GoReleaser, which is what a consumer does.
       - name: Verify a seven-target release
         env:
           IMAGE: ${{ env.IMAGE }}:${{ matrix.arch }}
         run: bash test/release-snapshot.sh
 
-      # Pushed under the run id, and the digest is handed to the publish job, so it
-      # merges what this run built rather than whatever a tag points at. Only on the
-      # paths that publish: a branch dispatch builds and verifies without tags.
+      # The publish job merges this digest, not a tag lookup.
       - name: Push this architecture
         if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
         env:
@@ -129,8 +120,7 @@ jobs:
   publish:
     name: publish
     needs: build
-    # Tags and main only. A workflow_dispatch on a branch should build and verify
-    # without publishing, and a pull request must never reach this job.
+    # Tags and main only: a branch dispatch builds and verifies without publishing.
     if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -156,9 +146,9 @@ jobs:
           merge-multiple: true
           path: digests
 
-      # Merged from the two digests the build jobs reported, never from a tag: a tag
-      # can be overwritten between the two jobs, and this workflow's signature is
-      # only worth anything if it signs what the build actually produced.
+      # From the digests the build jobs reported, never from a tag: a tag can be
+      # overwritten between jobs, and the signature is only worth something if it
+      # covers what the build produced.
       - name: Merge the two architectures
         id: merge
         run: |
@@ -172,8 +162,7 @@ jobs:
           echo "digest=${digest}" >>"$GITHUB_OUTPUT"
           echo "merged index is ${IMAGE}@${digest}"
 
-      # Digest pinning only means something if the digest came from somewhere a
-      # consumer can check, so sign it keylessly with the workflow's own identity.
+      # Sign the digest keylessly, or pinning it means nothing.
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
@@ -182,8 +171,7 @@ jobs:
           DIGEST: ${{ steps.merge.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
-      # Verified before the release tags exist, so a signature that failed to land
-      # cannot leave a version tag pointing at an unsigned image.
+      # Before the release tags exist, so a failed signature cannot leave tags behind.
       - name: Verify the signature
         env:
           DIGEST: ${{ steps.merge.outputs.digest }}
@@ -193,9 +181,7 @@ jobs:
             --certificate-identity-regexp "^https://github\.com/${REPOSITORY}/\.github/workflows/image\.yml@" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-      # A tag push publishes that version; a push to the default branch publishes a
-      # rolling latest plus the date and commit, so a consumer can pin something
-      # older than latest without waiting for a release.
+      # A tag push publishes that version; the default branch publishes a rolling set.
       - name: Tag the release
         env:
           DIGEST: ${{ steps.merge.outputs.digest }}
