@@ -5,3 +5,4 @@ vendor
 changelog.md
 cosign.key
 .tmpenv
+tmp

@@ -1,0 +1,7 @@
+# DL3008/DL3018 want every apt and apk package pinned to a version. The version
+# pins that matter here are the base image digests and the toolchains; distro
+# package versions move within a release and pinning them means chasing security
+# updates by hand. Not worth it, so the checks are off rather than the rules bent.
+ignored:
+  - DL3008
+  - DL3018

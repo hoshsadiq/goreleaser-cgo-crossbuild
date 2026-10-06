@@ -1,0 +1,10 @@
+# The checkout's .git is never used and can carry credentials.
+**/.git
+
+# A local cross-make build leaves gigabytes of tarballs and source trees here.
+cross-make/build*
+cross-make/obj_*
+cross-make/sources
+cross-make/*.orig
+
+tmp
