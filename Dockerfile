@@ -9,14 +9,7 @@ ARG MUSL_TARGETS="x86_64-linux-musl aarch64-linux-musl i686-linux-musl"
 ARG MUSL_JOBS=
 ARG GNU_SITE=https://mirrors.kernel.org/gnu
 
-# cross-make fetches config.guess and config.sub from Savannah, which is regularly
-# unreachable, so they are committed here at the revision its Makefile pins. The
-# guard below fails if a submodule bump moves that revision, so the copy cannot go
-# stale in silence.
-ARG GNU_CONFIG_REV=a2287c3041a3
-ARG CONFIG_GUESS_SHA256=50205cf3ec5c7615b17f937a0a57babf4ec5cd0aade3d7b3cccbe5f1bf91a7ef
-ARG CONFIG_SUB_SHA256=26b852f75a637448360a956931439f7e818bf63150eaadb9b85484347628d1fd
-
+# Savannah serves these two and is regularly unreachable, so they are committed.
 RUN apk add --no-cache \
         make curl bash patch gcc g++ musl-dev linux-headers \
         ca-certificates git gawk xz rsync file
@@ -31,15 +24,17 @@ RUN set -eux; \
     mkdir -p sources; \
     for file in config.guess config.sub; do \
         case "$file" in \
-            config.guess) rev_var=CONFIG_GUESS_REV; want="$CONFIG_GUESS_SHA256" ;; \
-            config.sub) rev_var=CONFIG_SUB_REV; want="$CONFIG_SUB_SHA256" ;; \
+            config.guess) rev_var=CONFIG_GUESS_REV ;; \
+            config.sub) rev_var=CONFIG_SUB_REV ;; \
         esac; \
-        pinned="$(sed -n "s/^$rev_var *= *//p" Makefile | head -1)"; \
-        if [ "$pinned" != "$GNU_CONFIG_REV" ]; then \
-            echo "cross-make pins $rev_var=$pinned, gnu-config/ holds $GNU_CONFIG_REV: re-vendor it and update the CONFIG_*_SHA256 values" >&2; \
+        rev="$(sed -n "s/^$rev_var *= *//p" Makefile | head -1)"; \
+        expected_file="hashes/$file.$rev.sha1"; \
+        expected=""; \
+        if [ -f "$expected_file" ]; then expected="$(awk '{print $1}' "$expected_file")"; fi; \
+        if [ -z "$expected" ] || ! printf '%s  %s\n' "$expected" "/build/gnu-config/$file" | sha1sum -c - >/dev/null; then \
+            echo "gnu-config/$file is not the file cross-make records for $rev_var=$rev: re-vendor it from config.git at that revision" >&2; \
             exit 1; \
         fi; \
-        printf '%s  %s\n' "$want" "/build/gnu-config/$file" | sha256sum -c -; \
         install -m 0755 "/build/gnu-config/$file" "sources/$file"; \
     done
 

@@ -208,10 +208,9 @@ six-hour cap.
 cross-make fetches `config.guess` and `config.sub` from `git.savannah.gnu.org`
 while unpacking sources, and that host is regularly unreachable, which kills the
 build before a compiler is built. Both files are committed under `gnu-config/`
-instead, taken from the revision cross-make's Makefile pins, with their sha256 in
-the Dockerfile. A build-time guard compares that revision against the one in
-`cross-make/Makefile` and fails if a submodule bump moves it, so the copy cannot go
-stale without saying so.
+instead, at the revision cross-make's Makefile names. The build checks them against
+the hash cross-make records for that revision, so a submodule bump that moves it
+fails the build and says to re-vendor. Nothing here has to be kept in step by hand.
 
 nixpkgs solves the same problem by pinning the two files by hash and fetching them
 from a cgit URL (`pkgs/by-name/gn/gnu-config`). That is the right shape, but when
@@ -225,12 +224,10 @@ is configured to bump them and the base image digests, which assumes the Renovat
 app is installed on this repository: there is no Dependabot config, so nothing else
 will move them, and with issues disabled the dependency dashboard is switched off.
 
-Three pins have a digest beside them and cannot be bumped alone:
+Two pins have a digest beside them and cannot be bumped alone:
 
 - `LLVM_MINGW_VERSION` with `LLVM_MINGW_SHA256_AMD64` and `LLVM_MINGW_SHA256_ARM64`
 - `MISE_VERSION` with `MISE_SHA256_AMD64` and `MISE_SHA256_ARM64`
-- the two config scripts with `CONFIG_GUESS_SHA256` and `CONFIG_SUB_SHA256`, whose
-  revision comes out of cross-make's Makefile at build time
 
 Neither project publishes checksums, so those values are the digests GitHub reports
 for the release assets:
