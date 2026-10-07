@@ -194,7 +194,10 @@ mise run image:build -- --build-arg MUSL_JOBS=2
 ```
 
 The musl stage dominates: cross-make compiles GCC and binutils once per musl
-target, and everything else is downloading by comparison. That is half an hour to
+target, and everything else is downloading by comparison. Its sources come from
+`mirrors.kernel.org` rather than GNU's `ftpmirror.gnu.org`, which is GNU's own
+infrastructure and has been unreachable for hours at a time; the mirror serves
+byte-identical tarballs, checked against cross-make's recorded sha1s. That is half an hour to
 an hour on a 5 CPU, 4 GiB machine at `MUSL_JOBS=2` (27 minutes for two targets on
 an idle machine, 53 for three while other containers shared the CPU); once the
 layer is cached a rebuild is minutes. The workflow gives each architecture a native
