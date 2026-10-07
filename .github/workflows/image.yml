@@ -175,9 +175,6 @@ jobs:
             --certificate-identity-regexp "^https://github\.com/${REPOSITORY}/\.github/workflows/image\.yml@" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-      # The tag names are computed here and applied after signing, since imagetools is
-      # the only way to put a tag on a manifest list that already exists in the
-      # registry. A pre-release gets its version tag and nothing that moves.
       - name: Tags
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
