@@ -155,15 +155,26 @@ over `/mise`.
 
 ## Darwin deployment target
 
-osxcross links against a macOS deployment target older than the one Go stamps its
-objects with, so a Darwin build logs:
+Go's linker stamps the objects it compiles with macOS 13.0, the oldest version Go
+1.27 supports, while osxcross's clang links with its own default of 11.0, so a
+Darwin build logs:
 
 ```
 ld: warning: object file (/tmp/go-link-XXXX/go.o) was built for newer macOS version (13.0) than being linked (11.0)
 ```
 
-Set `MACOSX_DEPLOYMENT_TARGET` in the build environment, as a GoReleaser `env`
-entry, to silence it and to state the target you actually support.
+Nothing is wrong: the binary links and declares the lower target. To silence it
+without giving up macOS 11 and 12, move Go's stamp to the version you support,
+with Go's own linker flag (`-macos`, which overrides the default above):
+
+```yaml
+    ldflags:
+      - '-macos 11.0'
+```
+
+`MACOSX_DEPLOYMENT_TARGET` is not a Go variable; nothing in Go's tree reads it. It
+changes clang's target instead, so it silences the warning by raising the floor of
+the binary itself, which is a support decision rather than a fix.
 
 ## Checking an image
 
